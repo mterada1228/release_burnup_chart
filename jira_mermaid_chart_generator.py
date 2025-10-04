@@ -194,31 +194,11 @@ class JiraMermaidChartGenerator:
         Returns:
             (平均ベロシティ（ストーリーポイント/スプリント）, 平均スプリント期間（日数）)
         """
-        # まずスクラムボードを探す
-        print(f"スクラムボードを検索中...")
-        scrum_boards = self.get_boards_for_project(project_key, 'scrum')
+        boards = self.get_boards_for_project(project_key, None)
         
-        # スクラムボードが見つからない場合、全てのボードを取得
-        if not scrum_boards:
-            print(f"スクラムボードが見つかりませんでした。全てのボードを取得します...")
-            all_boards = self.get_boards_for_project(project_key, None)
-            
-            if not all_boards:
-                print(f"警告: プロジェクト {project_key} のボードが見つかりませんでした")
-                return 0.0, 0.0
-            
-            # 全てのボードの情報を表示
-            print(f"\n見つかったボード: {len(all_boards)}件")
-            for i, board in enumerate(all_boards):
-                print(f"  {i+1}. {board['name']} (ID: {board['id']}, タイプ: {board['type']})")
-            
-            # 全てのボードからベロシティを取得してみる
-            boards = all_boards
-        else:
-            print(f"見つかったスクラムボード: {len(scrum_boards)}件")
-            for i, board in enumerate(scrum_boards):
-                print(f"  {i+1}. {board['name']} (ID: {board['id']})")
-            boards = scrum_boards
+        if not boards:
+            print(f"警告: プロジェクト {project_key} のボードが見つかりませんでした")
+            return 0.0, 0.0
         
         # 各ボードからベロシティを取得
         for board in boards:
@@ -402,24 +382,6 @@ class JiraMermaidChartGenerator:
         
         return date_strings, total_points_over_time, completed_points_over_time
     
-    def calculate_burnup_data(
-        self,
-        total_points: List[float],
-        completed_points: List[float]
-    ) -> Tuple[List[float], List[float]]:
-        """
-        バーンアップチャート用のデータを計算
-        
-        Args:
-            total_points: 全体のストーリーポイントリスト（スコープライン）
-            completed_points: 完了済みストーリーポイントリスト
-            
-        Returns:
-            (完了済みポイント, 全体のスコープポイント)
-        """
-        # バーンアップチャートでは完了済みポイントと全体のポイントをそのまま使用
-        return completed_points, total_points
-    
     def calculate_velocity_forecast(
         self,
         completed_points: List[float],
@@ -520,7 +482,7 @@ class JiraMermaidChartGenerator:
         total_scope: List[float],
         completed_points: List[float],
         velocity_forecast: List[float] = None,
-        chart_title: str = "バーンアップチャート"
+        chart_title: str = "バーンアップチャート",
     ) -> str:
         """
         Mermaid XY Chart のコードを生成（バーンアップチャート）
@@ -538,11 +500,9 @@ class JiraMermaidChartGenerator:
         # 最大値を計算（y軸の範囲設定用）
         max_value = max(
             max(total_scope) if total_scope else 0,
-            max(completed_points) if completed_points else 0
-        )
-        if velocity_forecast:
-            max_value = max(max_value, max(velocity_forecast) if velocity_forecast else 0)
-        max_value = int(max_value) + 50  # 余裕を持たせる
+            max(completed_points) if completed_points else 0,
+            max(velocity_forecast) if velocity_forecast else 0
+        ) + 10
         
         # 日付ラベルを簡潔にする（月/日 形式）
         date_labels = []
@@ -552,7 +512,15 @@ class JiraMermaidChartGenerator:
         
         # Mermaid コードを生成
         # 注: 各lineのラベルは自動的に凡例として表示されます
-        mermaid_code = f'''%%{{init: {{'theme':'base'}}}}%%
+        mermaid_code = f'''%%{{
+  init: {{
+    "themeVariables": {{
+      "xyChart": {{
+        "plotColorPalette": "gray, green, blue"
+      }}
+    }}
+  }}
+}}%%
 xychart-beta
     title "{chart_title}"
     x-axis "日付" [{', '.join([f'"{label}"' for label in date_labels])}]
@@ -609,7 +577,7 @@ def main():
     if end_date_str:
         end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
     else:
-        end_date = datetime.now()
+        end_date = datetime.now() + timedelta(days=90)
     
     # チャート生成器を初期化
     generator = JiraMermaidChartGenerator(jira_url, jira_username, jira_api_token)
@@ -622,62 +590,9 @@ def main():
     issues = generator.get_issues_by_version(project_key, version_name)
     print(f"  取得チケット数: {len(issues)}")
     
-    if not issues:
-        print("警告: チケットが見つかりませんでした。")
-        print("プロジェクトキーとバージョン名を確認してください。")
-        sys.exit(1)
-    
-    # デバッグ: 最初のチケットのフィールド情報を表示
-    if issues:
-        print("\n" + "="*80)
-        print("【ステップ1】デバッグ情報: フィールド一覧")
-        print("="*80)
-        
-        # すべてのフィールド定義を取得
-        print("フィールド定義を取得中...")
-        all_field_defs = generator.get_all_fields()
-        
-        first_issue = issues[0]
-        fields = first_issue.get('fields', {})
-        
-        # Story Point 関連のカスタムフィールドを探す
-        story_point_field = generator.get_story_point_field_id()
-        print(f"\n設定されているストーリーポイントフィールド: {story_point_field}")
-        print(f"その値: {fields.get(story_point_field)}")
-        
-        print("\nすべてのカスタムフィールド（フィールド名付き）:")
-        for key, value in sorted(fields.items()):
-            if key.startswith('customfield_'):
-                field_name = all_field_defs.get(key, '不明')
-                # 値が設定されているもののみ表示
-                if value is not None:
-                    print(f"  {key}: {field_name} = {value}")
-        
-        # 「ざっくりポイント」を探す
-        print("\n「ざっくりポイント」フィールドを探しています...")
-        zakkuri_field_found = None
-        for field_id, field_name in all_field_defs.items():
-            if 'ざっくりポイント' in field_name or 'ざっくり' in field_name:
-                print(f"  ✓ 見つかりました: {field_id} = {field_name}")
-                zakkuri_field_found = field_id
-                if field_id in fields:
-                    print(f"    最初のチケットでの値: {fields[field_id]}")
-        
-        if not zakkuri_field_found:
-            print("  ✗ 「ざっくりポイント」フィールドが見つかりませんでした")
-            print("  ヒント: 上記のカスタムフィールド一覧から手動で確認してください")
-        
-        print("="*80 + "\n")
-    
     # 時系列でストーリーポイントを計算
     dates, total_points, completed_points = generator.calculate_story_points_over_time(
         issues, start_date, end_date, interval_days
-    )
-    
-    
-    # バーンアップチャート用のデータを計算
-    completed_data, scope_data = generator.calculate_burnup_data(
-        total_points, completed_points
     )
     
     # 実際のデータの長さを保持（今日までのデータポイント数）
@@ -692,14 +607,14 @@ def main():
             break
     
     # 現在の進捗を表示
-    if scope_data and completed_data:
-        current_scope = scope_data[-1]
-        current_completed = completed_data[actual_data_length - 1] if actual_data_length > 0 else 0
+    if total_points and completed_points:
+        current_scope = total_points[-1]
+        current_completed = completed_points[actual_data_length - 1] if actual_data_length > 0 else 0
         progress = (current_completed / current_scope * 100) if current_scope > 0 else 0
         print(f"\n現在の進捗: {current_completed:.1f} / {current_scope:.1f} ポイント ({progress:.1f}%)")
     
     # 目標値を設定（最終スコープ）
-    target_value = scope_data[-1] if scope_data else 0
+    target_value = total_points[-1] if total_points else 0
     
     # JIRA APIからベロシティを取得
     print("\n" + "="*80)
@@ -723,9 +638,9 @@ def main():
     else:
         # 完了データから計算
         temp_velocities = []
-        if len(completed_data) >= 2:
-            for i in range(1, len(completed_data)):
-                v = completed_data[i] - completed_data[i-1]
+        if len(completed_points) >= 2:
+            for i in range(1, len(completed_points)):
+                v = completed_points[i] - completed_points[i-1]
                 if v > 0:
                     temp_velocities.append(v)
         chart_velocity = sum(temp_velocities) / len(temp_velocities) if temp_velocities else 0
@@ -738,7 +653,7 @@ def main():
         if target_value > 0:
             # 進捗予想ラインが目標値に達するまでの期間
             # 現在の完了値から目標値までの残りを計算
-            current_completed = completed_data[actual_data_length - 1] if actual_data_length > 0 else 0
+            current_completed = completed_points[actual_data_length - 1] if actual_data_length > 0 else 0
             remaining = target_value - current_completed
             if remaining > 0:
                 periods_to_complete = int(remaining / chart_velocity) + 1
@@ -759,21 +674,21 @@ def main():
             for i in range(1, periods_to_add + 1):
                 future_date = last_date + timedelta(days=interval_days * i)
                 dates.append(future_date.strftime('%Y-%m-%d'))
-                scope_data.append(scope_data[-1] if scope_data else 0)
-                completed_data.append(completed_data[-1] if completed_data else 0)
+                total_points.append(total_points[-1] if total_points else 0)
+                completed_points.append(completed_points[-1] if completed_points else 0)
             
             print(f"\n未来の期間を {periods_to_add} 期間追加しました")
     
     # ベロシティベースの進捗予想を計算
     velocity_forecast, avg_velocity = generator.calculate_velocity_forecast(
-        completed_data, len(dates), target_value, interval_days, actual_data_length,
+        completed_points, len(dates), target_value, interval_days, actual_data_length,
         api_avg_velocity, avg_sprint_duration, velocity_multiplier
     )
     
     # 予想完了時期を計算
     if avg_velocity > 0:
         # 実際のデータの最後の値を使用
-        actual_completed = completed_data[actual_data_length - 1] if actual_data_length > 0 else 0
+        actual_completed = completed_points[actual_data_length - 1] if actual_data_length > 0 else 0
         remaining = target_value - actual_completed
         if remaining > 0:
             periods_needed = remaining / avg_velocity
@@ -792,7 +707,7 @@ def main():
     
     # Mermaid チャートコードを生成
     mermaid_code = generator.generate_mermaid_chart(
-        dates, scope_data, completed_data, velocity_forecast
+        dates, total_points, completed_points, velocity_forecast, f"{version_name} リリース進捗"
     )
     
     print("\n" + "="*80)
@@ -815,4 +730,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
