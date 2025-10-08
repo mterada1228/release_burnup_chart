@@ -353,10 +353,11 @@ class JiraMermaidChartGenerator:
                         
                         # 完了済みの判定（Done, Closed など）
                         completed_statuses = ['Done', 'Closed', 'Resolved', '完了', 'クローズ']
-                        is_completed = status in completed_statuses
                         
+                        is_completed = False
+
                         # 解決日が設定されている場合はそれも考慮
-                        if resolution_date_str:
+                        if (status in completed_statuses) and resolution_date_str:
                             resolution_date = datetime.fromisoformat(resolution_date_str.replace('Z', '+00:00'))
                             if resolution_date.date() <= date.date():
                                 is_completed = True
