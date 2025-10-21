@@ -407,9 +407,9 @@ class JiraMermaidChartGenerator:
         api_avg_velocity: float = None,
         avg_sprint_duration: float = None,
         velocity_multiplier: float = 1.0
-    ) -> Tuple[List[float], float]:
+    ) -> Tuple[List[float], float, List[float], List[float], float, float]:
         """
-        ベロシティベースの進捗予想ラインを生成
+        ベロシティベースの進捗予想ラインを生成（80%信頼区間付き）
         
         Args:
             completed_points: 完了済みストーリーポイントのリスト（未来の期間を含む可能性あり）
@@ -419,17 +419,40 @@ class JiraMermaidChartGenerator:
             actual_data_length: 実際のデータの長さ（未来の期間を除く）
             api_avg_velocity: JIRA APIから取得した平均ベロシティ（ポイント/スプリント）（オプション）
             avg_sprint_duration: 平均スプリント期間（日数）（オプション）
+            velocity_multiplier: ベロシティ調整係数
             
         Returns:
-            (進捗予想のリスト, 使用した平均ベロシティ（チャート期間単位）)
+            (進捗予想のリスト, 使用した平均ベロシティ, 楽観ケース, 悲観ケース, 楽観ベロシティ, 悲観ベロシティ)
         """
         if not completed_points or actual_data_length < 1:
-            return [0] * num_points, 0.0
+            empty = [0] * num_points
+            return empty, 0.0, empty, empty, 0.0, 0.0
         
         # 実際のデータのみを使ってベロシティを計算
         actual_completed_points = completed_points[:actual_data_length]
         
-        # 平均ベロシティを決定
+        # 各期間のベロシティ（増分）を計算（標準偏差計算のため）
+        velocities = []
+        for i in range(1, len(actual_completed_points)):
+            velocity = actual_completed_points[i] - actual_completed_points[i-1]
+            if velocity >= 0:  # 0以上の増分を考慮
+                velocities.append(velocity)
+        
+        # 平均ベロシティと標準偏差を計算
+        if not velocities or len(velocities) < 2:
+            # データが不足している場合
+            avg_velocity = 0
+            std_dev = 0
+        else:
+            # 平均ベロシティ
+            base_velocity = sum(velocities) / len(velocities)
+            avg_velocity = base_velocity * velocity_multiplier
+            
+            # 標準偏差を計算
+            variance = sum((v - base_velocity) ** 2 for v in velocities) / len(velocities)
+            std_dev = variance ** 0.5
+        
+        # APIから取得したベロシティを使う場合は平均値を上書き
         if api_avg_velocity is not None and api_avg_velocity > 0 and avg_sprint_duration is not None and avg_sprint_duration > 0:
             # API から取得したベロシティをチャートの期間単位に変換
             # ベロシティ/スプリント → ベロシティ/チャート期間
@@ -444,52 +467,65 @@ class JiraMermaidChartGenerator:
             if velocity_multiplier != 1.0:
                 print(f"  調整後のベロシティ: {avg_velocity:.2f} ポイント/{interval_days}日間 (×{velocity_multiplier:.2f})")
         else:
-            # 各期間のベロシティ（増分）を計算
-            velocities = []
-            for i in range(1, len(actual_completed_points)):
-                velocity = actual_completed_points[i] - actual_completed_points[i-1]
-                if velocity > 0:  # 正の増分のみを考慮
-                    velocities.append(velocity)
-            
-            # 平均ベロシティを計算
-            if not velocities:
-                base_velocity = 0
-            else:
-                base_velocity = sum(velocities) / len(velocities)
-            
-            avg_velocity = base_velocity * velocity_multiplier
-            
             print(f"\n完了データから計算したベロシティを使用:")
             print(f"  ベースベロシティ: {base_velocity:.2f} ポイント/{interval_days}日間")
             if velocity_multiplier != 1.0:
                 print(f"  調整後のベロシティ: {avg_velocity:.2f} ポイント/{interval_days}日間 (×{velocity_multiplier:.2f})")
         
-        # 進捗予想ラインを生成
-        # 過去は実績値、未来は予測値
-        forecast = []
+        # 80%信頼区間の計算（z値 = 1.282）
+        z_value = 1.282
+        optimistic_velocity = avg_velocity + (z_value * std_dev * velocity_multiplier)
+        pessimistic_velocity = max(0, avg_velocity - (z_value * std_dev * velocity_multiplier))
         
+        print(f"\n80%信頼区間:")
+        print(f"  標準偏差: {std_dev:.2f} ポイント/{interval_days}日間")
+        print(f"  楽観ケース（上限）: {optimistic_velocity:.2f} ポイント/{interval_days}日間")
+        print(f"  平均: {avg_velocity:.2f} ポイント/{interval_days}日間")
+        print(f"  悲観ケース（下限）: {pessimistic_velocity:.2f} ポイント/{interval_days}日間")
+        
+        # 進捗予想ラインを生成（平均、楽観、悲観）
+        # 過去は実績値、未来は予測値
         if actual_data_length <= 0:
-            return [0] * num_points, avg_velocity
+            empty = [0] * num_points
+            return empty, avg_velocity, empty, empty, optimistic_velocity, pessimistic_velocity
         
         if not actual_completed_points or len(actual_completed_points) == 0:
-            return [0] * num_points, avg_velocity
+            empty = [0] * num_points
+            return empty, avg_velocity, empty, empty, optimistic_velocity, pessimistic_velocity
         
         if actual_data_length > len(actual_completed_points):
             actual_data_length = len(actual_completed_points)
         
         last_actual_value = actual_completed_points[actual_data_length - 1]
         
+        # 3つのラインを生成
+        forecast_avg = []
+        forecast_optimistic = []
+        forecast_pessimistic = []
+        
         for i in range(num_points):
             if i < actual_data_length:
                 # 過去：実績値をそのまま使用
-                forecast.append(actual_completed_points[i])
+                forecast_avg.append(actual_completed_points[i])
+                forecast_optimistic.append(actual_completed_points[i])
+                forecast_pessimistic.append(actual_completed_points[i])
             else:
-                # 未来：最後の実績値からベロシティで予測
+                # 未来：最後の実績値から各ベロシティで予測
                 periods_ahead = i - actual_data_length + 1
-                predicted_value = last_actual_value + (avg_velocity * periods_ahead)
-                forecast.append(predicted_value)
+                
+                # 平均ケース
+                predicted_avg = last_actual_value + (avg_velocity * periods_ahead)
+                forecast_avg.append(predicted_avg)
+                
+                # 楽観ケース（上限）
+                predicted_optimistic = last_actual_value + (optimistic_velocity * periods_ahead)
+                forecast_optimistic.append(predicted_optimistic)
+                
+                # 悲観ケース（下限）
+                predicted_pessimistic = last_actual_value + (pessimistic_velocity * periods_ahead)
+                forecast_pessimistic.append(predicted_pessimistic)
         
-        return forecast, avg_velocity
+        return forecast_avg, avg_velocity, forecast_optimistic, forecast_pessimistic, optimistic_velocity, pessimistic_velocity
     
     def generate_mermaid_chart(
         self,
@@ -497,6 +533,8 @@ class JiraMermaidChartGenerator:
         total_scope: List[float],
         completed_points: List[float],
         velocity_forecast: List[float] = None,
+        forecast_optimistic: List[float] = None,
+        forecast_pessimistic: List[float] = None,
         chart_title: str = "バーンアップチャート",
     ) -> str:
         """
@@ -506,7 +544,9 @@ class JiraMermaidChartGenerator:
             dates: 日付リスト
             total_scope: 全体のスコープ（全ストーリーポイント）
             completed_points: 完了済みストーリーポイント
-            velocity_forecast: ベロシティベースの進捗予想（オプション）
+            velocity_forecast: ベロシティベースの進捗予想（平均）（オプション）
+            forecast_optimistic: 楽観ケースの進捗予想（80%信頼区間上限）（オプション）
+            forecast_pessimistic: 悲観ケースの進捗予想（80%信頼区間下限）（オプション）
             chart_title: チャートタイトル
             
         Returns:
@@ -516,7 +556,9 @@ class JiraMermaidChartGenerator:
         max_value = max(
             max(total_scope) if total_scope else 0,
             max(completed_points) if completed_points else 0,
-            max(velocity_forecast) if velocity_forecast else 0
+            max(velocity_forecast) if velocity_forecast else 0,
+            max(forecast_optimistic) if forecast_optimistic else 0,
+            max(forecast_pessimistic) if forecast_pessimistic else 0
         ) + 10
         
         # 日付ラベルを簡潔にする（月/日 形式）
@@ -531,7 +573,7 @@ class JiraMermaidChartGenerator:
   init: {{
     "themeVariables": {{
       "xyChart": {{
-        "plotColorPalette": "gray, green, blue"
+        "plotColorPalette": "gray, green, lightblue, lightblue, blue"
       }}
     }}
   }}
@@ -543,11 +585,21 @@ xychart-beta
     line "全体のスコープ" [{', '.join([f'{v:.2f}' for v in total_scope])}]
     line "完了済み" [{', '.join([f'{v:.2f}' for v in completed_points])}]'''
         
-        # 進捗予想ラインを追加（凡例に自動的に表示されます）
+        # 楽観ケースを追加
+        if forecast_optimistic:
+            mermaid_code += f'''
+    line "楽観ケース（80%上限）" [{', '.join([f'{v:.2f}' for v in forecast_optimistic])}]'''
+        
+        # 悲観ケースを追加
+        if forecast_pessimistic:
+            mermaid_code += f'''
+    line "悲観ケース（80%下限）" [{', '.join([f'{v:.2f}' for v in forecast_pessimistic])}]'''
+        
+        # 進捗予想ライン（平均）を追加
         if velocity_forecast:
             mermaid_code += f'''
-    line "進捗予想（ベロシティ平均）" [{', '.join([f'{v:.2f}' for v in velocity_forecast])}]'''
-        
+    line "進捗予想（平均）" [{', '.join([f'{v:.2f}' for v in velocity_forecast])}]'''
+
         return mermaid_code
 
 
@@ -582,6 +634,7 @@ def main():
     start_date_str = os.getenv('JIRA_START_DATE')
     end_date_str = os.getenv('JIRA_END_DATE')
     interval_days = int(os.getenv('JIRA_INTERVAL_DAYS', '7'))
+    target_release_date_str = os.getenv('JIRA_TARGET_RELEASE_DATE')
     
     # 日付の設定
     if start_date_str:
@@ -694,35 +747,75 @@ def main():
             
             print(f"\n未来の期間を {periods_to_add} 期間追加しました")
     
-    # ベロシティベースの進捗予想を計算
-    velocity_forecast, avg_velocity = generator.calculate_velocity_forecast(
+    # ベロシティベースの進捗予想を計算（平均、楽観、悲観）
+    velocity_forecast, avg_velocity, forecast_optimistic, forecast_pessimistic, optimistic_velocity, pessimistic_velocity = generator.calculate_velocity_forecast(
         completed_points, len(dates), target_value, interval_days, actual_data_length,
         api_avg_velocity, avg_sprint_duration, velocity_multiplier
     )
     
-    # 予想完了時期を計算
-    if avg_velocity > 0:
-        # 実際のデータの最後の値を使用
-        actual_completed = completed_points[actual_data_length - 1] if actual_data_length > 0 else 0
-        remaining = target_value - actual_completed
-        if remaining > 0:
-            periods_needed = remaining / avg_velocity
-            days_needed = periods_needed * interval_days
+    # 心のリリース日と予想完了時期を計算
+    print("\n" + "="*80)
+    print("リリース予測")
+    print("="*80)
+    
+    # 心のリリース日の表示と80%目標日の計算
+    if target_release_date_str:
+        try:
+            target_release_date = datetime.strptime(target_release_date_str, '%Y-%m-%d')
+            print(f"\n心のリリース日: {target_release_date.strftime('%m/%d')}")
             
-            print(f"\n残りポイント: {remaining:.2f}")
-            print(f"予想完了まで: {periods_needed:.1f} 期間（約 {days_needed:.0f} 日）")
-            
-            # 予想完了日を計算（今日を基準にする）
-            today = datetime.now()
-            estimated_completion_date = today + timedelta(days=days_needed)
-            print(f"予想完了日: {estimated_completion_date.strftime('%Y年%m月%d日')} (今日 {today.strftime('%Y年%m月%d日')} から計算)")
-        else:
-            print(f"\n✓ すでに完了しています！")
+            # スプリント開始日（start_date）から心のリリース日までの期間の80%の日数
+            total_days = (target_release_date - start_date).days
+            eighty_percent_days = int(total_days * 0.8)
+            eighty_percent_date = start_date + timedelta(days=eighty_percent_days)
+            print(f"（80%目標: スプリント開始から心のリリース日までの期間の80%の日付け {eighty_percent_date.strftime('%m/%d')}）")
+        except ValueError:
+            print(f"\n心のリリース日が設定されていないか、形式が正しくありません")
+    else:
+        print(f"\n心のリリース日: 未設定")
+    
+    # 実際のデータの最後の値を使用
+    actual_completed = completed_points[actual_data_length - 1] if actual_data_length > 0 else 0
+    remaining = target_value - actual_completed
+    
+    print(f"\n残りポイント: {remaining:.2f}")
+    print(f"予想完了日:")
+    
+    today = datetime.now()
+    
+    # 平均ペース
+    if avg_velocity > 0 and remaining > 0:
+        periods_needed_avg = remaining / avg_velocity
+        days_needed_avg = periods_needed_avg * interval_days
+        estimated_completion_avg = today + timedelta(days=days_needed_avg)
+        print(f"　平均ペース: {periods_needed_avg:.1f} 期間（約 {days_needed_avg:.0f} 日）完了日 {estimated_completion_avg.strftime('%Y年%m月%d日')}")
+    else:
+        print(f"　平均ペース: すでに完了")
+    
+    # 楽観ペース
+    if optimistic_velocity > 0 and remaining > 0:
+        periods_needed_opt = remaining / optimistic_velocity
+        days_needed_opt = periods_needed_opt * interval_days
+        estimated_completion_opt = today + timedelta(days=days_needed_opt)
+        print(f"　楽観ペース: {periods_needed_opt:.1f} 期間（約 {days_needed_opt:.0f} 日）完了日 {estimated_completion_opt.strftime('%Y年%m月%d日')}")
+    else:
+        print(f"　楽観ペース: すでに完了")
+    
+    # 悲観ペース
+    if pessimistic_velocity > 0 and remaining > 0:
+        periods_needed_pes = remaining / pessimistic_velocity
+        days_needed_pes = periods_needed_pes * interval_days
+        estimated_completion_pes = today + timedelta(days=days_needed_pes)
+        print(f"　悲観ペース: {periods_needed_pes:.1f} 期間（約 {days_needed_pes:.0f} 日）完了日 {estimated_completion_pes.strftime('%Y年%m月%d日')}")
+    else:
+        print(f"　悲観ペース: ベロシティが不足しています")
+    
     print("="*80)
     
     # Mermaid チャートコードを生成
     mermaid_code = generator.generate_mermaid_chart(
-        dates, total_points, completed_points, velocity_forecast, 
+        dates, total_points, completed_points, velocity_forecast,
+        forecast_optimistic, forecast_pessimistic,
         f"{version_name} リリース進捗"
     )
     
