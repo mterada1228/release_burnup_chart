@@ -216,20 +216,28 @@ class JiraMermaidChartGenerator:
                 continue
             
             # ベロシティデータから完了したスプリントのデータを抽出
-            velocities = []
-            sprints = velocity_data.get('velocityStatEntries', {})
+            velocity_stat_entries = velocity_data.get('velocityStatEntries', {})
             
-            if not sprints:
-                print(f"  → スプリントデータがありません")
+            if not velocity_stat_entries:
+                print(f"  → ベロシティ統計データがありません")
                 continue
             
-            for sprint_id, sprint_data in sprints.items():
-                # completed が存在し、完了したスプリントのみを対象
-                estimated = sprint_data.get('estimated', {})
-                completed = estimated.get('value', 0)
+            # スプリントIDの降順でソート（最新のスプリントが先頭）
+            sorted_sprint_ids = sorted(velocity_stat_entries.keys(), key=lambda x: int(x), reverse=True)
+            
+            velocities = []
+            sprint_info = []  # デバッグ用
+            
+            for sprint_id in sorted_sprint_ids:
+                sprint_data = velocity_stat_entries[sprint_id]
                 
-                if completed > 0:
-                    velocities.append(completed)
+                # completed フィールドから実際に完了したポイントを取得
+                completed_data = sprint_data.get('completed', {})
+                completed_value = completed_data.get('value', 0)
+                
+                if completed_value > 0:
+                    velocities.append(completed_value)
+                    sprint_info.append(f"Sprint {sprint_id}: {completed_value:.1f}pt")
             
             if not velocities:
                 print(f"  → 完了したスプリントのベロシティデータがありません")
@@ -239,15 +247,21 @@ class JiraMermaidChartGenerator:
             avg_velocity = sum(velocities) / len(velocities)
             
             print(f"  ✓ 取得成功！")
-            print(f"  取得したスプリント数: {len(velocities)}件")
-            print(f"  各スプリントのベロシティ: {[f'{v:.1f}' for v in velocities]}")
+            print(f"  ベロシティのあるスプリント: {len(velocities)}件（最新順）")
+            
+            # 最新の5件まで表示
+            display_count = min(5, len(sprint_info))
+            for i in range(display_count):
+                print(f"    {i+1}. {sprint_info[i]}")
+            if len(sprint_info) > display_count:
+                print(f"    ... 他 {len(sprint_info) - display_count} 件")
             print(f"  平均ベロシティ: {avg_velocity:.2f} ポイント/スプリント")
             
             # スプリントの平均期間を計算
             sprints = self.get_sprints_from_board(board_id)
             sprint_durations = []
             
-            for sprint in sprints:
+            for sprint in sprints[:len(velocities)] if len(sprints) > 0 else []:
                 start_date_str = sprint.get('startDate')
                 end_date_str = sprint.get('endDate')
                 
@@ -708,7 +722,8 @@ def main():
     
     # Mermaid チャートコードを生成
     mermaid_code = generator.generate_mermaid_chart(
-        dates, total_points, completed_points, velocity_forecast, f"{version_name} リリース進捗"
+        dates, total_points, completed_points, velocity_forecast, 
+        f"{version_name} リリース進捗"
     )
     
     print("\n" + "="*80)
