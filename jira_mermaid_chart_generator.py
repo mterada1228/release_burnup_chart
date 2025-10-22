@@ -184,21 +184,21 @@ class JiraMermaidChartGenerator:
         data = response.json()
         return data.get('values', [])
     
-    def calculate_average_velocity_from_api(self, project_key: str) -> Tuple[float, float]:
+    def calculate_average_velocity_from_api(self, project_key: str) -> Tuple[float, float, float]:
         """
-        JIRA APIからベロシティの平均を計算
+        JIRA APIからベロシティの平均と標準偏差を計算
         
         Args:
             project_key: プロジェクトキー
             
         Returns:
-            (平均ベロシティ（ストーリーポイント/スプリント）, 平均スプリント期間（日数）)
+            (平均ベロシティ（ストーリーポイント/スプリント）, 平均スプリント期間（日数）, 標準偏差（ストーリーポイント/スプリント）)
         """
         boards = self.get_boards_for_project(project_key, None)
         
         if not boards:
             print(f"警告: プロジェクト {project_key} のボードが見つかりませんでした")
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         
         # 各ボードからベロシティを取得
         for board in boards:
@@ -246,6 +246,13 @@ class JiraMermaidChartGenerator:
             # ベロシティが取得できたので、このボードを使用
             avg_velocity = sum(velocities) / len(velocities)
             
+            # 標準偏差を計算
+            if len(velocities) >= 2:
+                variance = sum((v - avg_velocity) ** 2 for v in velocities) / len(velocities)
+                std_dev = variance ** 0.5
+            else:
+                std_dev = 0.0
+            
             print(f"  ✓ 取得成功！")
             print(f"  ベロシティのあるスプリント: {len(velocities)}件（最新順）")
             
@@ -256,6 +263,7 @@ class JiraMermaidChartGenerator:
             if len(sprint_info) > display_count:
                 print(f"    ... 他 {len(sprint_info) - display_count} 件")
             print(f"  平均ベロシティ: {avg_velocity:.2f} ポイント/スプリント")
+            print(f"  標準偏差: {std_dev:.2f} ポイント/スプリント")
             
             # スプリントの平均期間を計算
             sprints = self.get_sprints_from_board(board_id)
@@ -283,10 +291,10 @@ class JiraMermaidChartGenerator:
                 avg_sprint_duration = 14.0
                 print(f"  スプリント期間が取得できませんでした。デフォルト値を使用: {avg_sprint_duration} 日")
             
-            return avg_velocity, avg_sprint_duration
+            return avg_velocity, avg_sprint_duration, std_dev
         
         print("\n警告: どのボードからもベロシティデータを取得できませんでした")
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     
     def calculate_story_points_over_time(
         self,
@@ -406,6 +414,7 @@ class JiraMermaidChartGenerator:
         actual_data_length: int,
         api_avg_velocity: float = None,
         avg_sprint_duration: float = None,
+        api_std_dev: float = None,
         velocity_multiplier: float = 1.0
     ) -> Tuple[List[float], float, List[float], List[float], float, float]:
         """
@@ -419,6 +428,7 @@ class JiraMermaidChartGenerator:
             actual_data_length: 実際のデータの長さ（未来の期間を除く）
             api_avg_velocity: JIRA APIから取得した平均ベロシティ（ポイント/スプリント）（オプション）
             avg_sprint_duration: 平均スプリント期間（日数）（オプション）
+            api_std_dev: JIRA APIから取得した標準偏差（ポイント/スプリント）（オプション）
             velocity_multiplier: ベロシティ調整係数
             
         Returns:
@@ -438,11 +448,17 @@ class JiraMermaidChartGenerator:
             if velocity >= 0:  # 0以上の増分を考慮
                 velocities.append(velocity)
         
+        print(f"\n[デバッグ] ベロシティ計算:")
+        print(f"  実際のデータポイント数: {len(actual_completed_points)}")
+        print(f"  実際の完了ポイント: {actual_completed_points}")
+        print(f"  計算されたベロシティ（増分）: {velocities}")
+        
         # 平均ベロシティと標準偏差を計算
         if not velocities or len(velocities) < 2:
             # データが不足している場合
             avg_velocity = 0
             std_dev = 0
+            print(f"  注意: ベロシティデータが不足しているため標準偏差は0です（データポイント数: {len(velocities)}）")
         else:
             # 平均ベロシティ
             base_velocity = sum(velocities) / len(velocities)
@@ -451,6 +467,8 @@ class JiraMermaidChartGenerator:
             # 標準偏差を計算
             variance = sum((v - base_velocity) ** 2 for v in velocities) / len(velocities)
             std_dev = variance ** 0.5
+            print(f"  ベースベロシティ（実データから）: {base_velocity:.2f}")
+            print(f"  標準偏差（実データから）: {std_dev:.2f}")
         
         # APIから取得したベロシティを使う場合は平均値を上書き
         if api_avg_velocity is not None and api_avg_velocity > 0 and avg_sprint_duration is not None and avg_sprint_duration > 0:
@@ -459,11 +477,20 @@ class JiraMermaidChartGenerator:
             base_velocity = api_avg_velocity * (interval_days / avg_sprint_duration)
             avg_velocity = base_velocity * velocity_multiplier
             
-            print(f"\nJIRA APIから取得したベロシティを使用:")
+            # APIから取得した標準偏差も変換
+            if api_std_dev is not None and api_std_dev > 0:
+                std_dev = api_std_dev * (interval_days / avg_sprint_duration)
+                print(f"\nJIRA APIから取得したベロシティと標準偏差を使用:")
+            else:
+                print(f"\nJIRA APIから取得したベロシティを使用（標準偏差は実データから）:")
+            
             print(f"  スプリントベロシティ: {api_avg_velocity:.2f} ポイント/スプリント")
             print(f"  スプリント期間: {avg_sprint_duration:.1f} 日")
             print(f"  チャート期間: {interval_days} 日")
             print(f"  変換後のベロシティ: {base_velocity:.2f} ポイント/{interval_days}日間")
+            if api_std_dev is not None and api_std_dev > 0:
+                print(f"  スプリント標準偏差: {api_std_dev:.2f} ポイント/スプリント")
+                print(f"  変換後の標準偏差: {std_dev:.2f} ポイント/{interval_days}日間")
             if velocity_multiplier != 1.0:
                 print(f"  調整後のベロシティ: {avg_velocity:.2f} ポイント/{interval_days}日間 (×{velocity_multiplier:.2f})")
         else:
@@ -688,7 +715,7 @@ def main():
     print("\n" + "="*80)
     print("JIRA APIからベロシティ情報を取得中...")
     print("="*80)
-    api_avg_velocity, avg_sprint_duration = generator.calculate_average_velocity_from_api(project_key)
+    api_avg_velocity, avg_sprint_duration, api_std_dev = generator.calculate_average_velocity_from_api(project_key)
     
     # ベロシティ調整係数を取得（環境変数）
     velocity_adjustment = float(os.getenv('JIRA_VELOCITY_ADJUSTMENT', '100'))
@@ -750,7 +777,7 @@ def main():
     # ベロシティベースの進捗予想を計算（平均、楽観、悲観）
     velocity_forecast, avg_velocity, forecast_optimistic, forecast_pessimistic, optimistic_velocity, pessimistic_velocity = generator.calculate_velocity_forecast(
         completed_points, len(dates), target_value, interval_days, actual_data_length,
-        api_avg_velocity, avg_sprint_duration, velocity_multiplier
+        api_avg_velocity, avg_sprint_duration, api_std_dev, velocity_multiplier
     )
     
     # 心のリリース日と予想完了時期を計算
