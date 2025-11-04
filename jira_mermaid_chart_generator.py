@@ -236,8 +236,15 @@ class JiraMermaidChartGenerator:
                 completed_value = completed_data.get('value', 0)
                 
                 if completed_value > 0:
-                    velocities.append(completed_value)
-                    sprint_info.append(f"Sprint {sprint_id}: {completed_value:.1f}pt")
+                    # sprint_id が 14010 以下の場合は2倍にする
+                    sprint_id_int = int(sprint_id)
+                    if sprint_id_int <= 14010:
+                        adjusted_value = completed_value * 2
+                        velocities.append(adjusted_value)
+                        sprint_info.append(f"Sprint {sprint_id}: {completed_value:.1f}pt → {adjusted_value:.1f}pt (2倍適用)")
+                    else:
+                        velocities.append(completed_value)
+                        sprint_info.append(f"Sprint {sprint_id}: {completed_value:.1f}pt")
             
             if not velocities:
                 print(f"  → 完了したスプリントのベロシティデータがありません")
@@ -447,11 +454,6 @@ class JiraMermaidChartGenerator:
             velocity = actual_completed_points[i] - actual_completed_points[i-1]
             if velocity >= 0:  # 0以上の増分を考慮
                 velocities.append(velocity)
-        
-        print(f"\n[デバッグ] ベロシティ計算:")
-        print(f"  実際のデータポイント数: {len(actual_completed_points)}")
-        print(f"  実際の完了ポイント: {actual_completed_points}")
-        print(f"  計算されたベロシティ（増分）: {velocities}")
         
         # 平均ベロシティと標準偏差を計算
         if not velocities or len(velocities) < 2:
