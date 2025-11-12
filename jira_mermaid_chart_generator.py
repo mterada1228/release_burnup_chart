@@ -194,6 +194,9 @@ class JiraMermaidChartGenerator:
         Returns:
             (平均ベロシティ（ストーリーポイント/スプリント）, 平均スプリント期間（日数）, 標準偏差（ストーリーポイント/スプリント）)
         """
+        # TODO: ougi での平均ベロシティが3回分以上溜まったら、project_keyは引数から取得したものを利用する
+        project_key = "NOB"
+
         boards = self.get_boards_for_project(project_key, None)
         
         if not boards:
@@ -238,7 +241,7 @@ class JiraMermaidChartGenerator:
                 if completed_value > 0:
                     # sprint_id が 14010 以下の場合は2倍にする
                     sprint_id_int = int(sprint_id)
-                    if sprint_id_int <= 14010:
+                    if sprint_id_int <= 14011:
                         adjusted_value = completed_value * 2
                         velocities.append(adjusted_value)
                         sprint_info.append(f"Sprint {sprint_id}: {completed_value:.1f}pt → {adjusted_value:.1f}pt (2倍適用)")
